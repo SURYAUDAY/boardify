@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { GripVertical, X } from 'lucide-react';
+import { useWhiteboardStore } from '../../store/whiteboardStore';
 import type { StickyNote as StickyNoteType } from '@shared/types';
 
 const COLORS = [
@@ -22,7 +23,14 @@ export default function StickyNote({ note, onUpdate, onDelete }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pos, setPos] = useState({ x: note.x, y: note.y });
   const [size, setSize] = useState({ width: note.width, height: note.height });
-  const dragOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
+  // Subscribe to zoom so drag/resize deltas are scaled correctly
+  const zoomRef = useRef<number>(useWhiteboardStore.getState().zoom);
+  useEffect(() => {
+    const unsub = useWhiteboardStore.subscribe((s) => {
+      zoomRef.current = s.zoom;
+    });
+    return () => unsub();
+  }, []);
   const resizeStartRef = useRef<{
     startX: number;
     startY: number;
@@ -51,21 +59,22 @@ export default function StickyNote({ note, onUpdate, onDelete }: Props) {
 
   function startDrag(e: React.MouseEvent) {
     e.preventDefault();
-    dragOffsetRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
+    const startClientX = e.clientX;
+    const startClientY = e.clientY;
+    const startPos = { x: pos.x, y: pos.y };
 
     function onMove(ev: MouseEvent) {
-      if (!dragOffsetRef.current) return;
-      const nx = ev.clientX - dragOffsetRef.current.dx;
-      const ny = ev.clientY - dragOffsetRef.current.dy;
+      const z = zoomRef.current || 1;
+      const nx = startPos.x + (ev.clientX - startClientX) / z;
+      const ny = startPos.y + (ev.clientY - startClientY) / z;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(() => setPos({ x: nx, y: ny }));
     }
     function onUp(ev: MouseEvent) {
-      if (!dragOffsetRef.current) return;
-      const nx = ev.clientX - dragOffsetRef.current.dx;
-      const ny = ev.clientY - dragOffsetRef.current.dy;
+      const z = zoomRef.current || 1;
+      const nx = startPos.x + (ev.clientX - startClientX) / z;
+      const ny = startPos.y + (ev.clientY - startClientY) / z;
       onUpdate(note.id, { x: nx, y: ny });
-      dragOffsetRef.current = null;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     }
@@ -86,16 +95,18 @@ export default function StickyNote({ note, onUpdate, onDelete }: Props) {
     function onMove(ev: MouseEvent) {
       const r = resizeStartRef.current;
       if (!r) return;
-      const w = Math.max(120, Math.min(600, r.startW + (ev.clientX - r.startX)));
-      const h = Math.max(80, Math.min(600, r.startH + (ev.clientY - r.startY)));
+      const z = zoomRef.current || 1;
+      const w = Math.max(120, Math.min(600, r.startW + (ev.clientX - r.startX) / z));
+      const h = Math.max(80, Math.min(600, r.startH + (ev.clientY - r.startY) / z));
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(() => setSize({ width: w, height: h }));
     }
     function onUp(ev: MouseEvent) {
       const r = resizeStartRef.current;
       if (!r) return;
-      const w = Math.max(120, Math.min(600, r.startW + (ev.clientX - r.startX)));
-      const h = Math.max(80, Math.min(600, r.startH + (ev.clientY - r.startY)));
+      const z = zoomRef.current || 1;
+      const w = Math.max(120, Math.min(600, r.startW + (ev.clientX - r.startX) / z));
+      const h = Math.max(80, Math.min(600, r.startH + (ev.clientY - r.startY) / z));
       onUpdate(note.id, { width: w, height: h });
       resizeStartRef.current = null;
       document.removeEventListener('mousemove', onMove);

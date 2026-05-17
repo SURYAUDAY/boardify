@@ -81,6 +81,9 @@ export default function Canvas({
   const addStroke = useWhiteboardStore((s) => s.addStroke);
   const removeStroke = useWhiteboardStore((s) => s.removeStroke);
   const user = useWhiteboardStore((s) => s.user);
+  const panX = useWhiteboardStore((s) => s.panX);
+  const panY = useWhiteboardStore((s) => s.panY);
+  const setPan = useWhiteboardStore((s) => s.setPan);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -88,15 +91,17 @@ export default function Canvas({
 
     function resize() {
       if (!canvas) return;
+      // Use offset (layout) dimensions — ignores CSS transform so pixel buffer stays at viewport size
       const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.scale(dpr, dpr);
-        redrawAll(ctx, strokes, rect.width, rect.height);
+        redrawAll(ctx, strokes, w, h);
       }
     }
     resize();
@@ -109,8 +114,7 @@ export default function Canvas({
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const rect = canvas.getBoundingClientRect();
-    redrawAll(ctx, strokes, rect.width, rect.height);
+    redrawAll(ctx, strokes, canvas.offsetWidth, canvas.offsetHeight);
 
     if (selectedId) {
       const sel = strokes.find((s) => s.id === selectedId);
@@ -165,9 +169,16 @@ export default function Canvas({
   ): Point {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
+    // rect is post-transform; offsetWidth ignores transform.
+    // Ratio converts screen px → canvas internal px regardless of CSS zoom.
+    const scaleX = canvas.offsetWidth / rect.width;
+    const scaleY = canvas.offsetHeight / rect.height;
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
     const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    return { x: clientX - rect.left, y: clientY - rect.top };
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
   }
 
   function eraseAt(point: Point) {
@@ -193,6 +204,26 @@ export default function Canvas({
 
   function onDown(e: React.MouseEvent<HTMLCanvasElement>) {
     if (!user || readOnly) return;
+
+    // Pan tool: drag updates panX/panY (deltas in screen space — translate is pre-scale in CSS)
+    if (activeTool === 'pan') {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startPanX = panX;
+      const startPanY = panY;
+      function onMove(ev: MouseEvent) {
+        setPan(startPanX + (ev.clientX - startX), startPanY + (ev.clientY - startY));
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      return;
+    }
+
     const point = getPoint(e);
 
     if (activeTool === 'select') {

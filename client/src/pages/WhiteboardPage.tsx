@@ -52,14 +52,31 @@ export default function WhiteboardPage() {
   const addStickyNote = useWhiteboardStore((s) => s.addStickyNote);
   const setActiveTool = useWhiteboardStore((s) => s.setActiveTool);
   const participants = useWhiteboardStore((s) => s.participants);
+  const zoom = useWhiteboardStore((s) => s.zoom);
+  const panX = useWhiteboardStore((s) => s.panX);
+  const panY = useWhiteboardStore((s) => s.panY);
   const [loading, setLoading] = useState(true);
   const [roomOpen, setRoomOpen] = useState(false);
   const [aiOpen, setAIOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [selection, setSelection] = useState<Bounds | null>(null);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
   const exportButtonRef = useRef<HTMLButtonElement>(null);
   const historyInitialisedRef = useRef(false);
+
+  async function commitTitle() {
+    const next = titleDraft.trim();
+    setEditingTitle(false);
+    if (!id || !next || !board || next === board.title) return;
+    try {
+      const res = await api.patch(`/boards/${id}`, { title: next });
+      setBoard(res.data);
+    } catch {
+      // silently ignore — autosave handles transient errors
+    }
+  }
 
   const { isSaving } = useAutoSave(id);
   const {
@@ -188,9 +205,33 @@ export default function WhiteboardPage() {
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <span className="text-[15px] font-semibold text-white">
-            {board?.title || 'Untitled'}
-          </span>
+          {editingTitle && !readOnly ? (
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitTitle();
+                if (e.key === 'Escape') setEditingTitle(false);
+              }}
+              className="text-[15px] font-semibold text-white bg-[#1E293B] border border-indigo-500 rounded px-2 py-0.5 outline-none w-56"
+            />
+          ) : (
+            <span
+              className={`text-[15px] font-semibold text-white ${
+                readOnly ? '' : 'cursor-text hover:opacity-80'
+              }`}
+              title={readOnly ? '' : 'Double-click to rename'}
+              onDoubleClick={() => {
+                if (readOnly) return;
+                setTitleDraft(board?.title || '');
+                setEditingTitle(true);
+              }}
+            >
+              {board?.title || 'Untitled'}
+            </span>
+          )}
           {readOnly && (
             <span className="bg-gray-700 text-gray-300 text-[11px] px-2 py-0.5 rounded-full">
               View only
@@ -242,22 +283,30 @@ export default function WhiteboardPage() {
       </div>
 
       {/* Canvas area */}
-      <div className="flex-grow relative">
-        <Canvas
-          onPointerMove={onPointerMove}
-          onStrokeAdded={onStrokeAdded}
-          onStrokeDeleted={onStrokeDeleted}
-          onStickyCreated={onStickyCreated}
-          onSelectionChanged={setSelection}
-          readOnly={readOnly}
-        />
+      <div className="flex-grow relative overflow-hidden">
+        <div
+          className="absolute inset-0"
+          style={{
+            transformOrigin: '0 0',
+            transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
+          }}
+        >
+          <Canvas
+            onPointerMove={onPointerMove}
+            onStrokeAdded={onStrokeAdded}
+            onStrokeDeleted={onStrokeDeleted}
+            onStickyCreated={onStickyCreated}
+            onSelectionChanged={setSelection}
+            readOnly={readOnly}
+          />
 
-        <StickyNotesLayer
-          onUpdate={(noteId, partial) => emitStickyUpdate(noteId, partial)}
-          onDelete={(noteId) => emitStickyDelete(noteId)}
-        />
+          <StickyNotesLayer
+            onUpdate={(noteId, partial) => emitStickyUpdate(noteId, partial)}
+            onDelete={(noteId) => emitStickyDelete(noteId)}
+          />
 
-        <CursorOverlay />
+          <CursorOverlay />
+        </div>
 
         {selection && id && (
           <SelectionOverlay

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
-  Grid, Users, Clock, Star, Settings, LogOut, Search, Plus, X,
+  Grid, Users, Clock, LogOut, Search, Plus, X,
   Share2, MoreVertical, Presentation, Sparkles,
 } from 'lucide-react';
 import api from '../lib/api';
@@ -18,6 +18,8 @@ interface BoardItem {
   collaborators: { user: string; role: string }[];
   owner: string | { _id: string; name: string };
 }
+
+type Filter = 'all' | 'recent' | 'shared';
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -118,9 +120,11 @@ export default function DashboardPage() {
 
   const [boards, setBoards] = useState<BoardItem[] | null>(null);
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<'all' | 'recent' | 'shared'>('all');
+  const [filter, setFilter] = useState<Filter>('all');
   const [showNewBoard, setShowNewBoard] = useState(false);
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   useEffect(() => {
     if (!token) {
@@ -149,22 +153,54 @@ export default function DashboardPage() {
     setMenuOpenFor(null);
   }
 
+  function startRename(b: BoardItem) {
+    setRenamingId(b._id);
+    setRenameValue(b.title);
+    setMenuOpenFor(null);
+  }
+
+  async function commitRename() {
+    if (!renamingId) return;
+    const newTitle = renameValue.trim();
+    if (!newTitle) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      const res = await api.patch(`/boards/${renamingId}`, { title: newTitle });
+      setBoards((bs) =>
+        (bs || []).map((b) => (b._id === renamingId ? { ...b, title: res.data.title } : b))
+      );
+      toast.success('Renamed');
+    } catch {
+      toast.error('Failed to rename');
+    } finally {
+      setRenamingId(null);
+    }
+  }
+
+  const filterTitle = filter === 'shared' ? 'Shared with me' : filter === 'recent' ? 'Recent' : 'My Boards';
+
   const filtered = (boards || [])
     .filter((b) => b.title.toLowerCase().includes(query.toLowerCase()))
     .filter((b) => {
-      if (filter === 'all') return true;
       if (filter === 'shared') {
         const ownerId = typeof b.owner === 'string' ? b.owner : b.owner._id;
         return user && ownerId !== user.id;
       }
       return true;
+    })
+    .sort((a, b) => {
+      if (filter === 'recent') {
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      }
+      return 0;
     });
 
-  const navItems = [
-    { icon: Grid, label: 'My Boards', active: true },
-    { icon: Users, label: 'Shared with me' },
-    { icon: Clock, label: 'Recent' },
-    { icon: Star, label: 'Starred' },
+  const navItems: { icon: typeof Grid; label: string; value: Filter }[] = [
+    { icon: Grid, label: 'My Boards', value: 'all' },
+    { icon: Users, label: 'Shared with me', value: 'shared' },
+    { icon: Clock, label: 'Recent', value: 'recent' },
   ];
 
   return (
@@ -180,9 +216,10 @@ export default function DashboardPage() {
         <nav className="px-3 flex-grow">
           {navItems.map((item) => (
             <button
-              key={item.label}
+              key={item.value}
+              onClick={() => setFilter(item.value)}
               className={`w-full flex items-center gap-3 h-11 px-3 rounded-lg mb-1 transition ${
-                item.active
+                filter === item.value
                   ? 'bg-indigo-500/10 text-indigo-400'
                   : 'text-white hover:bg-white/5'
               }`}
@@ -191,11 +228,6 @@ export default function DashboardPage() {
               <span className="text-sm">{item.label}</span>
             </button>
           ))}
-          <div className="my-3 h-px bg-[#334155]" />
-          <button className="w-full flex items-center gap-3 h-11 px-3 rounded-lg text-white hover:bg-white/5">
-            <Settings className="w-4 h-4" />
-            <span className="text-sm">Settings</span>
-          </button>
         </nav>
         <div className="p-3 flex items-center gap-2 border-t border-[#334155]">
           <div
@@ -208,7 +240,7 @@ export default function DashboardPage() {
             <div className="text-sm text-white truncate">{user?.name || 'User'}</div>
             <div className="text-xs text-[#94A3B8]">Free plan</div>
           </div>
-          <button onClick={handleLogout} className="text-gray-400 hover:text-white">
+          <button onClick={handleLogout} className="text-gray-400 hover:text-white" title="Logout">
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -217,7 +249,7 @@ export default function DashboardPage() {
       {/* Main */}
       <main className="flex-grow p-8">
         <div className="flex flex-wrap gap-4 items-center justify-between mb-6">
-          <h1 className="text-2xl font-semibold text-white">My Boards</h1>
+          <h1 className="text-2xl font-semibold text-white">{filterTitle}</h1>
           <div className="flex items-center gap-3">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
@@ -238,22 +270,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="flex gap-6 mb-6 border-b border-[#334155]">
-          {(['all', 'recent', 'shared'] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setFilter(t)}
-              className={`pb-3 text-sm capitalize transition border-b-2 ${
-                filter === t
-                  ? 'text-indigo-400 border-indigo-500'
-                  : 'text-[#94A3B8] border-transparent hover:text-white'
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-
         {boards === null ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {Array.from({ length: 6 }).map((_, i) => <BoardCardSkeleton key={i} />)}
@@ -263,13 +279,27 @@ export default function DashboardPage() {
             <EmptyState
               size="large"
               icon={<Presentation className="w-16 h-16" />}
-              title="No boards yet"
-              description="Create your first board and start collaborating with your team."
-              action={{
-                label: 'Create first board',
-                onClick: () => setShowNewBoard(true),
-                variant: 'primary',
-              }}
+              title={
+                filter === 'shared'
+                  ? 'Nothing shared with you yet'
+                  : filter === 'recent'
+                    ? 'No recent boards'
+                    : 'No boards yet'
+              }
+              description={
+                filter === 'shared'
+                  ? 'Boards others share with you will appear here.'
+                  : 'Create your first board and start collaborating with your team.'
+              }
+              action={
+                filter === 'all'
+                  ? {
+                      label: 'Create first board',
+                      onClick: () => setShowNewBoard(true),
+                      variant: 'primary',
+                    }
+                  : undefined
+              }
             />
           </div>
         ) : (
@@ -277,7 +307,7 @@ export default function DashboardPage() {
             {filtered.map((b) => (
               <div
                 key={b._id}
-                onClick={() => navigate(`/board/${b._id}`)}
+                onClick={() => renamingId !== b._id && navigate(`/board/${b._id}`)}
                 className="bg-[#1E293B] rounded-2xl border border-[#334155] hover:border-indigo-500 transition cursor-pointer overflow-hidden group"
               >
                 <div className="h-40 bg-[#0F172A] relative">
@@ -288,7 +318,22 @@ export default function DashboardPage() {
                   </svg>
                 </div>
                 <div className="p-5">
-                  <h3 className="text-sm font-semibold text-white truncate">{b.title}</h3>
+                  {renamingId === b._id ? (
+                    <input
+                      autoFocus
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') commitRename();
+                        if (e.key === 'Escape') setRenamingId(null);
+                      }}
+                      className="w-full text-sm font-semibold bg-[#0F172A] text-white border border-indigo-500 rounded px-2 py-1 outline-none"
+                    />
+                  ) : (
+                    <h3 className="text-sm font-semibold text-white truncate">{b.title}</h3>
+                  )}
                   <p className="text-xs text-[#94A3B8] mt-1">Last edited {timeAgo(b.updatedAt)}</p>
                   <div className="flex items-center justify-between mt-3">
                     <div className="flex">
@@ -301,7 +346,7 @@ export default function DashboardPage() {
                       ))}
                     </div>
                     <div className="flex items-center gap-2 relative" onClick={(e) => e.stopPropagation()}>
-                      <button className="text-[#94A3B8] hover:text-white">
+                      <button className="text-[#94A3B8] hover:text-white" title="Share">
                         <Share2 className="w-4 h-4" />
                       </button>
                       <button
@@ -312,7 +357,10 @@ export default function DashboardPage() {
                       </button>
                       {menuOpenFor === b._id && (
                         <div className="absolute right-0 top-6 bg-white rounded-lg shadow-xl w-32 py-1 z-10">
-                          <button className="w-full px-3 py-2 text-sm text-left text-[#374151] hover:bg-gray-50">
+                          <button
+                            onClick={() => startRename(b)}
+                            className="w-full px-3 py-2 text-sm text-left text-[#374151] hover:bg-gray-50"
+                          >
                             Rename
                           </button>
                           <button

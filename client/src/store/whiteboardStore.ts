@@ -59,7 +59,11 @@ interface WhiteboardState {
 
   // Viewport
   zoom: number;
+  panX: number;
+  panY: number;
   setZoom: (z: number) => void;
+  setPan: (x: number, y: number) => void;
+  resetViewport: () => void;
 
   // Realtime
   cursors: Record<string, RemoteCursor>;
@@ -144,7 +148,11 @@ export const useWhiteboardStore = create<WhiteboardState>((set) => ({
     set((s) => ({ stickyNotes: s.stickyNotes.filter((n) => n.id !== id) })),
 
   zoom: 1,
-  setZoom: (zoom) => set({ zoom }),
+  panX: 0,
+  panY: 0,
+  setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(4, zoom)) }),
+  setPan: (panX, panY) => set({ panX, panY }),
+  resetViewport: () => set({ zoom: 1, panX: 0, panY: 0 }),
 
   cursors: {},
   setCursor: (cursor) =>
