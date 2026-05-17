@@ -4,21 +4,27 @@ import User from '../models/User';
 
 interface ConnectedUser {
   userId: string;
-  socketId: string;
   name: string;
   avatar: string;
+  sockets: Set<string>;
 }
 
+// boardId → userId → ConnectedUser (each user can have multiple socket connections,
+// e.g. one per open tab; we only want them to appear once in the participants list)
 const rooms = new Map<string, Map<string, ConnectedUser>>();
 
 function roomName(boardId: string) {
   return `board:${boardId}`;
 }
 
-function listUsers(boardId: string): ConnectedUser[] {
+function listUsersPublic(boardId: string) {
   const m = rooms.get(boardId);
   if (!m) return [];
-  return Array.from(m.values());
+  return Array.from(m.values()).map((u) => ({
+    userId: u.userId,
+    name: u.name,
+    avatar: u.avatar,
+  }));
 }
 
 async function userHasAccess(boardId: string, userId: string): Promise<boolean> {
@@ -37,12 +43,13 @@ async function userHasAccess(boardId: string, userId: string): Promise<boolean> 
 export function registerSocketHandlers(io: Server) {
   io.on('connection', async (socket: Socket) => {
     const auth = socket.data.user as { id: string; email: string } | undefined;
-    const boardId = (socket.handshake.query.boardId as string) || undefined;
+    const rawBoardId = (socket.handshake.query.boardId as string) || undefined;
 
-    if (!auth || !boardId) {
+    if (!auth || !rawBoardId) {
       socket.disconnect();
       return;
     }
+    const boardId: string = rawBoardId;
 
     const hasAccess = await userHasAccess(boardId, auth.id);
     if (!hasAccess) {
@@ -63,9 +70,8 @@ export function registerSocketHandlers(io: Server) {
       return;
     }
 
-    const me: ConnectedUser = {
+    const me = {
       userId: auth.id,
-      socketId: socket.id,
       name: userDoc.name,
       avatar: userDoc.avatar,
     };
@@ -74,13 +80,25 @@ export function registerSocketHandlers(io: Server) {
     socket.data.me = me;
 
     socket.join(roomName(boardId));
-    if (!rooms.has(boardId)) rooms.set(boardId, new Map());
-    rooms.get(boardId)!.set(socket.id, me);
 
-    // Send full list to the new socket
-    socket.emit('room:users', listUsers(boardId));
-    // Tell others
-    socket.to(roomName(boardId)).emit('user:joined', me);
+    // Ensure room map exists and add this socket under the user entry
+    if (!rooms.has(boardId)) rooms.set(boardId, new Map());
+    const roomUsers = rooms.get(boardId)!;
+    let userEntry = roomUsers.get(me.userId);
+    const isFirstSocketForUser = !userEntry;
+    if (!userEntry) {
+      userEntry = { ...me, sockets: new Set() };
+      roomUsers.set(me.userId, userEntry);
+    }
+    userEntry.sockets.add(socket.id);
+
+    // Always send the deduplicated user list to the joining socket
+    socket.emit('room:users', listUsersPublic(boardId));
+
+    // Only announce a new participant the first time this userId joins the room
+    if (isFirstSocketForUser) {
+      socket.to(roomName(boardId)).emit('user:joined', me);
+    }
 
     // ---- Cursor ----
     socket.on('cursor:move', ({ x, y }: { x: number; y: number }) => {
@@ -108,7 +126,7 @@ export function registerSocketHandlers(io: Server) {
         if (!stroke || !stroke.id || !stroke.tool) return;
         await Board.findByIdAndUpdate(boardId, { $push: { strokes: stroke } });
         socket.to(roomName(boardId)).emit('stroke:add', stroke);
-      } catch (err) {
+      } catch {
         socket.emit('error', { message: 'Failed to save stroke' });
       }
     });
@@ -177,20 +195,25 @@ export function registerSocketHandlers(io: Server) {
       }
     });
 
+    function removeSocket() {
+      const room = rooms.get(boardId);
+      if (!room) return;
+      const entry = room.get(me.userId);
+      if (!entry) return;
+      entry.sockets.delete(socket.id);
+      // Only fire user:left when ALL the user's sockets are gone
+      if (entry.sockets.size === 0) {
+        room.delete(me.userId);
+        if (room.size === 0) rooms.delete(boardId);
+        socket.to(roomName(boardId)).emit('user:left', { userId: me.userId });
+      }
+    }
+
     socket.on('board:leave', () => {
-      const m = rooms.get(boardId);
-      if (m) m.delete(socket.id);
       socket.leave(roomName(boardId));
-      socket.to(roomName(boardId)).emit('user:left', { userId: me.userId });
+      removeSocket();
     });
 
-    socket.on('disconnect', () => {
-      const m = rooms.get(boardId);
-      if (m) {
-        m.delete(socket.id);
-        if (m.size === 0) rooms.delete(boardId);
-      }
-      socket.to(roomName(boardId)).emit('user:left', { userId: me.userId });
-    });
+    socket.on('disconnect', removeSocket);
   });
 }
