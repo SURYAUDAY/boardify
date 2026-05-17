@@ -308,9 +308,9 @@ export default function DashboardPage() {
               <div
                 key={b._id}
                 onClick={() => renamingId !== b._id && navigate(`/board/${b._id}`)}
-                className="bg-[#1E293B] rounded-2xl border border-[#334155] hover:border-indigo-500 transition cursor-pointer overflow-hidden group"
+                className="bg-[#1E293B] rounded-2xl border border-[#334155] hover:border-indigo-500 transition cursor-pointer group"
               >
-                <div className="h-40 bg-[#0F172A] relative">
+                <div className="h-40 bg-[#0F172A] relative rounded-t-2xl overflow-hidden">
                   <svg className="w-full h-full">
                     <path d="M 30 60 Q 60 40 100 60 T 160 55" fill="none" stroke="#334155" strokeWidth="2" />
                     <path d="M 40 100 Q 80 80 130 100 T 200 95" fill="none" stroke="#334155" strokeWidth="2" />
