@@ -58,17 +58,40 @@ router.get('/:id', optionalAuth, async (req: Request, res: Response) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return res.status(404).json({ error: 'Not found' });
   }
-  const board = await Board.findById(id);
+  const board = await Board.findById(id)
+    .populate('owner', 'name email avatar')
+    .populate('collaborators.user', 'name email avatar')
+    .lean();
   if (!board) return res.status(404).json({ error: 'Not found' });
 
+  type PopulatedUser = { _id: { toString(): string }; name: string; email: string; avatar: string };
+  const owner = board.owner as unknown as PopulatedUser;
+
   const userId = req.user?.id;
-  const isOwner = !!userId && String(board.owner) === userId;
-  const isCollab = !!userId && board.collaborators.some((c) => String(c.user) === userId);
+  const isOwner = !!userId && owner?._id?.toString() === userId;
+  const isCollab =
+    !!userId &&
+    board.collaborators.some((c) => {
+      const u = c.user as unknown as PopulatedUser;
+      return u?._id?.toString() === userId;
+    });
   const isShared = board.shareMode !== 'none';
   if (!isOwner && !isCollab && !isShared) {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  return res.json(board);
+
+  // Transform _id → id on the populated user fields so the frontend gets a consistent shape
+  const toIdShape = (u: PopulatedUser) =>
+    u ? { id: u._id.toString(), name: u.name, email: u.email, avatar: u.avatar } : u;
+  const response = {
+    ...board,
+    owner: toIdShape(owner),
+    collaborators: board.collaborators.map((c) => ({
+      ...c,
+      user: toIdShape(c.user as unknown as PopulatedUser),
+    })),
+  };
+  return res.json(response);
 });
 
 router.patch('/:id', optionalAuth, async (req: Request, res: Response) => {
