@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #6366F1;
+  --color-bg-canvas: #1A1A2E;
+  --color-bg-panel: #1E293B;
+  --color-bg-landing: #0F172A;
+  --font-sans: 'Inter', system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
