@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { nanoid } from 'nanoid';
 import { useWhiteboardStore } from '../../store/whiteboardStore';
-import { drawStroke, redrawAll, distanceBetween, isPointInRect } from '../../lib/canvasUtils';
+import {
+  drawStroke,
+  redrawAll,
+  distanceBetween,
+  isPointInRect,
+  screenToWorld,
+} from '../../lib/canvasUtils';
 import type { Point, Stroke } from '@shared/types';
 
 const ERASER_RADIUS = 12;
@@ -65,11 +71,11 @@ export default function Canvas({
   const [isDrawing, setIsDrawing] = useState(false);
   const currentPathRef = useRef<Point[]>([]);
   const startPointRef = useRef<Point | null>(null);
-  const [textInput, setTextInput] = useState<{ x: number; y: number } | null>(null);
+  const [textInput, setTextInput] = useState<Point | null>(null);
   const [textValue, setTextValue] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Region selection (for OCR)
+  // Region selection for OCR — stored in WORLD coordinates
   const [selectionRect, setSelectionRect] = useState<Bounds | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const selectionStartRef = useRef<Point | null>(null);
@@ -83,57 +89,132 @@ export default function Canvas({
   const user = useWhiteboardStore((s) => s.user);
   const panX = useWhiteboardStore((s) => s.panX);
   const panY = useWhiteboardStore((s) => s.panY);
+  const zoom = useWhiteboardStore((s) => s.zoom);
   const setPan = useWhiteboardStore((s) => s.setPan);
+  const setZoom = useWhiteboardStore((s) => s.setZoom);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  // Spacebar-held flag = temporary pan from any tool (Figma-style)
+  const [spaceHeld, setSpaceHeld] = useState(false);
 
-    function resize() {
-      if (!canvas) return;
-      // Use offset (layout) dimensions — ignores CSS transform so pixel buffer stays at viewport size
-      const dpr = window.devicePixelRatio || 1;
-      const w = canvas.offsetWidth;
-      const h = canvas.offsetHeight;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.scale(dpr, dpr);
-        redrawAll(ctx, strokes, w, h);
-      }
+  // ---- Drawing ----
+
+  function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, tempStroke?: Stroke) {
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    // Apply world-space transform: pan + zoom
+    ctx.save();
+    ctx.translate(panX, panY);
+    ctx.scale(zoom, zoom);
+
+    redrawAll(ctx, strokes, w, h);
+
+    if (tempStroke) {
+      drawStroke(ctx, tempStroke);
     }
-    resize();
-    window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, [strokes]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    redrawAll(ctx, strokes, canvas.offsetWidth, canvas.offsetHeight);
 
     if (selectedId) {
       const sel = strokes.find((s) => s.id === selectedId);
       if (sel) {
         const b = strokeBounds(sel);
         const pad = 6;
-        ctx.save();
         ctx.strokeStyle = '#6366F1';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 4]);
+        // Keep the selection box visually thin regardless of zoom level
+        ctx.lineWidth = 1.5 / zoom;
+        ctx.setLineDash([4 / zoom, 4 / zoom]);
         ctx.strokeRect(b.x - pad, b.y - pad, b.width + pad * 2, b.height + pad * 2);
-        ctx.restore();
+        ctx.setLineDash([]);
       }
     }
-  }, [strokes, selectedId]);
 
+    ctx.restore();
+  }
+
+  // Resize: keep canvas pixel buffer at viewport size (in CSS px × DPR)
   useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    function resize() {
+      if (!canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d');
+      if (ctx) drawScene(ctx, w, h);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Redraw on state changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    drawScene(ctx, canvas.offsetWidth, canvas.offsetHeight);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strokes, selectedId, panX, panY, zoom]);
+
+  // Wheel: Cmd/Ctrl = zoom around cursor, otherwise pan
+  // Registered as a non-passive listener so we can preventDefault on Ctrl+wheel
+  // (which would otherwise trigger the browser's page zoom).
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    function onWheel(e: WheelEvent) {
+      const rect = canvas!.getBoundingClientRect();
+      if (e.ctrlKey || e.metaKey) {
+        // Zoom around cursor: world coord under cursor stays fixed
+        e.preventDefault();
+        const state = useWhiteboardStore.getState();
+        const oldZoom = state.zoom;
+        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        const newZoom = Math.max(0.25, Math.min(4, oldZoom * factor));
+        if (newZoom === oldZoom) return;
+        // Anchor: world point under cursor must end at the same screen point
+        // screenX = worldX * zoom + panX → solve for new pan
+        const cursorX = e.clientX - rect.left;
+        const cursorY = e.clientY - rect.top;
+        const worldX = (cursorX - state.panX) / oldZoom;
+        const worldY = (cursorY - state.panY) / oldZoom;
+        const newPanX = cursorX - worldX * newZoom;
+        const newPanY = cursorY - worldY * newZoom;
+        setZoom(newZoom);
+        setPan(newPanX, newPanY);
+      } else {
+        // Pan: vertical wheel = vertical pan, Shift = horizontal pan
+        e.preventDefault();
+        const state = useWhiteboardStore.getState();
+        if (e.shiftKey) {
+          setPan(state.panX - e.deltaY, state.panY);
+        } else {
+          setPan(state.panX - e.deltaX, state.panY - e.deltaY);
+        }
+      }
+    }
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [setPan, setZoom]);
+
+  // Delete / Escape / Spacebar-pan
+  useEffect(() => {
+    function isEditableTarget(t: EventTarget | null): boolean {
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return true;
+      if (t instanceof HTMLElement && t.isContentEditable) return true;
+      return false;
+    }
     function onKey(e: KeyboardEvent) {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (isEditableTarget(e.target)) return;
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
         removeStroke(selectedId);
         onStrokeDeleted?.(selectedId);
@@ -150,9 +231,24 @@ export default function Canvas({
           onSelectionChanged?.(null);
         }
       }
+      // Spacebar held = temporary pan (Figma-style). Don't scroll the page.
+      if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        setSpaceHeld(true);
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setSpaceHeld(false);
+      }
     }
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    document.addEventListener('keyup', onKeyUp);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keyup', onKeyUp);
+    };
   }, [selectedId, removeStroke, onStrokeDeleted, textInput, selectionRect, onSelectionChanged]);
 
   // Clear selection when switching tools
@@ -164,26 +260,23 @@ export default function Canvas({
     }
   }, [activeTool, onSelectionChanged]);
 
-  function getPoint(
+  // ---- Coordinate helpers ----
+
+  function getWorldPoint(
     e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>
   ): Point {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
-    // rect is post-transform; offsetWidth ignores transform.
-    // Ratio converts screen px → canvas internal px regardless of CSS zoom.
-    const scaleX = canvas.offsetWidth / rect.width;
-    const scaleY = canvas.offsetHeight / rect.height;
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
     const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY,
-    };
+    return screenToWorld(clientX, clientY, rect, panX, panY, zoom);
   }
 
   function eraseAt(point: Point) {
+    // Eraser radius is in world space → divide by zoom so it feels constant on screen
+    const radius = ERASER_RADIUS / zoom;
     for (const s of strokes) {
-      if (strokeNearPoint(s, point, ERASER_RADIUS)) {
+      if (strokeNearPoint(s, point, radius)) {
         removeStroke(s.id);
         onStrokeDeleted?.(s.id);
       }
@@ -191,40 +284,52 @@ export default function Canvas({
   }
 
   function hitTestStroke(point: Point): Stroke | undefined {
+    const slop = 4 / zoom;
     return [...strokes].reverse().find((s) => {
       const b = strokeBounds(s);
       return isPointInRect(point, {
-        x: b.x - 4,
-        y: b.y - 4,
-        width: b.width + 8,
-        height: b.height + 8,
+        x: b.x - slop,
+        y: b.y - slop,
+        width: b.width + slop * 2,
+        height: b.height + slop * 2,
       });
     });
   }
 
-  function onDown(e: React.MouseEvent<HTMLCanvasElement>) {
-    if (!user || readOnly) return;
+  // ---- Mouse handlers ----
 
-    // Pan tool: drag updates panX/panY (deltas in screen space — translate is pre-scale in CSS)
-    if (activeTool === 'pan') {
+  function startPanDrag(e: React.MouseEvent<HTMLCanvasElement> | MouseEvent) {
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startPanX = panX;
+    const startPanY = panY;
+    function onMove(ev: MouseEvent) {
+      setPan(startPanX + (ev.clientX - startX), startPanY + (ev.clientY - startY));
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  function onDown(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (!user) return;
+
+    // Pan triggers (all 3 enter pan mode regardless of active tool):
+    //   1. Pan tool selected
+    //   2. Spacebar held (Figma-style temp pan)
+    //   3. Middle mouse button (button 1)
+    if (activeTool === 'pan' || spaceHeld || e.button === 1) {
       e.preventDefault();
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const startPanX = panX;
-      const startPanY = panY;
-      function onMove(ev: MouseEvent) {
-        setPan(startPanX + (ev.clientX - startX), startPanY + (ev.clientY - startY));
-      }
-      function onUp() {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-      }
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
+      startPanDrag(e);
       return;
     }
 
-    const point = getPoint(e);
+    if (readOnly) return;
+
+    const point = getWorldPoint(e);
 
     if (activeTool === 'select') {
       const hit = hitTestStroke(point);
@@ -260,7 +365,7 @@ export default function Canvas({
   }
 
   function onMove(e: React.MouseEvent<HTMLCanvasElement>) {
-    const point = getPoint(e);
+    const point = getWorldPoint(e);
     onPointerMove?.(point);
 
     if (isSelecting && selectionStartRef.current) {
@@ -288,9 +393,6 @@ export default function Canvas({
 
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
-    const rect = canvas.getBoundingClientRect();
-    redrawAll(ctx, strokes, rect.width, rect.height);
-
     const tempStroke: Stroke = {
       id: 'temp',
       tool: activeTool,
@@ -300,14 +402,14 @@ export default function Canvas({
       userId: user.id,
       timestamp: Date.now(),
     };
-    drawStroke(ctx, tempStroke);
+    drawScene(ctx, canvas.offsetWidth, canvas.offsetHeight, tempStroke);
   }
 
   function onUp() {
     if (isSelecting) {
       setIsSelecting(false);
       selectionStartRef.current = null;
-      if (selectionRect && (selectionRect.width < 10 || selectionRect.height < 10)) {
+      if (selectionRect && (selectionRect.width < 10 / zoom || selectionRect.height < 10 / zoom)) {
         setSelectionRect(null);
         onSelectionChanged?.(null);
       } else if (selectionRect) {
@@ -343,7 +445,7 @@ export default function Canvas({
   function onDoubleClick(e: React.MouseEvent<HTMLCanvasElement>) {
     if (!user || readOnly) return;
     if (activeTool === 'sticky') {
-      onStickyCreated?.(getPoint(e));
+      onStickyCreated?.(getWorldPoint(e));
     }
   }
 
@@ -369,6 +471,8 @@ export default function Canvas({
   }
 
   function cursorFor(tool: string): string {
+    // Spacebar override — temp pan mode
+    if (spaceHeld) return 'grab';
     switch (tool) {
       case 'pen':
       case 'line':
@@ -391,6 +495,23 @@ export default function Canvas({
     }
   }
 
+  // For the text-input overlay and the live selection-rect overlay we need to
+  // project world coords → screen coords so the HTML elements sit in the right
+  // visual spot (the canvas itself handles its own world transform).
+  const screenSelection =
+    isSelecting && selectionRect
+      ? {
+          left: selectionRect.x * zoom + panX,
+          top: selectionRect.y * zoom + panY,
+          width: selectionRect.width * zoom,
+          height: selectionRect.height * zoom,
+        }
+      : null;
+
+  const screenTextInput = textInput
+    ? { left: textInput.x * zoom + panX, top: textInput.y * zoom + panY }
+    : null;
+
   return (
     <div ref={containerRef} className="absolute inset-0">
       <canvas
@@ -404,22 +525,18 @@ export default function Canvas({
         style={{ cursor: cursorFor(activeTool), touchAction: 'none' }}
       />
 
-      {/* Render selection rect during drag (live) */}
-      {isSelecting && selectionRect && (
+      {screenSelection && (
         <div
           className="absolute pointer-events-none"
           style={{
-            left: selectionRect.x,
-            top: selectionRect.y,
-            width: selectionRect.width,
-            height: selectionRect.height,
+            ...screenSelection,
             border: '2px dashed #6366F1',
             background: 'rgba(99, 102, 241, 0.08)',
           }}
         />
       )}
 
-      {textInput && (
+      {textInput && screenTextInput && (
         <textarea
           autoFocus
           value={textValue}
@@ -438,12 +555,12 @@ export default function Canvas({
           placeholder="Type..."
           className="absolute bg-transparent border border-indigo-500/40 outline-none resize-none px-1 py-0 min-w-[120px]"
           style={{
-            left: textInput.x,
-            top: textInput.y,
+            left: screenTextInput.left,
+            top: screenTextInput.top,
             color: activeColor,
-            font: '16px Inter, sans-serif',
+            font: `${16 * zoom}px Inter, sans-serif`,
             lineHeight: '1.2',
-            height: 24,
+            height: 24 * zoom,
           }}
         />
       )}
@@ -451,5 +568,5 @@ export default function Canvas({
   );
 }
 
-// Export helpers used by SelectionOverlay/ExportPanel for hit/intersection logic
+// Used by other components for bounds math
 export { strokeBounds, rectsIntersect };

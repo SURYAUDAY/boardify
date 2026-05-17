@@ -26,6 +26,51 @@ export function isPointInRect(
   );
 }
 
+/**
+ * Convert a screen-space pointer position to world-space canvas coordinates,
+ * accounting for the canvas's screen bounding rect, current pan, and zoom.
+ *
+ * The canvas itself is always rendered at viewport size; pan/zoom are applied
+ * inside ctx.translate + ctx.scale before drawing. So a stroke at world coord
+ * (wx, wy) appears on screen at (wx * zoom + panX + rect.left, ...).
+ *
+ * Inverting that:
+ *   wx = (screenX - rect.left - panX) / zoom
+ *   wy = (screenY - rect.top  - panY) / zoom
+ */
+export function screenToWorld(
+  screenX: number,
+  screenY: number,
+  rect: { left: number; top: number },
+  panX: number,
+  panY: number,
+  zoom: number
+): Point {
+  return {
+    x: (screenX - rect.left - panX) / zoom,
+    y: (screenY - rect.top - panY) / zoom,
+  };
+}
+
+/**
+ * Project a world coordinate to a screen-space pixel offset (relative to the
+ * canvas's parent / wrapper). Used by HTML overlays (selection toolbar, OCR
+ * result card) that need to be positioned in screen space but referenced to
+ * world-space content.
+ */
+export function worldToScreen(
+  worldX: number,
+  worldY: number,
+  panX: number,
+  panY: number,
+  zoom: number
+): Point {
+  return {
+    x: worldX * zoom + panX,
+    y: worldY * zoom + panY,
+  };
+}
+
 export function drawArrowhead(
   ctx: CanvasRenderingContext2D,
   from: Point,

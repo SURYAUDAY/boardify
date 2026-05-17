@@ -2,6 +2,10 @@ import { useWhiteboardStore } from '../../store/whiteboardStore';
 
 export default function CursorOverlay() {
   const cursors = useWhiteboardStore((s) => s.cursors);
+  const zoom = useWhiteboardStore((s) => s.zoom);
+  // Counter-scale the cursor visuals so they stay at constant screen size
+  // even when the parent wrapper is scaled by zoom.
+  const invZoom = 1 / zoom;
 
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -10,7 +14,10 @@ export default function CursorOverlay() {
           key={c.userId}
           className="absolute"
           style={{
-            transform: `translate(${c.x}px, ${c.y}px)`,
+            left: 0,
+            top: 0,
+            transformOrigin: '0 0',
+            transform: `translate(${c.x}px, ${c.y}px) scale(${invZoom})`,
             transition: 'transform 50ms linear',
           }}
         >

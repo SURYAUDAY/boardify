@@ -6,6 +6,8 @@ import {
   isPointInRect,
   drawStroke,
   redrawAll,
+  screenToWorld,
+  worldToScreen,
 } from '../canvasUtils';
 import type { Stroke } from '@shared/types';
 
@@ -148,5 +150,46 @@ describe('redrawAll', () => {
     ];
     redrawAll(ctx, strokes, 500, 500);
     expect(ctx.stroke).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('screenToWorld / worldToScreen', () => {
+  it('identity transform (pan 0, zoom 1) returns rect-relative coords', () => {
+    const rect = { left: 100, top: 50 };
+    expect(screenToWorld(150, 80, rect, 0, 0, 1)).toEqual({ x: 50, y: 30 });
+  });
+
+  it('pan only — subtracts pan from coords', () => {
+    const rect = { left: 0, top: 0 };
+    expect(screenToWorld(200, 100, rect, 50, 25, 1)).toEqual({ x: 150, y: 75 });
+  });
+
+  it('zoom only — divides by zoom', () => {
+    const rect = { left: 0, top: 0 };
+    expect(screenToWorld(200, 100, rect, 0, 0, 2)).toEqual({ x: 100, y: 50 });
+  });
+
+  it('pan + zoom — both applied', () => {
+    const rect = { left: 0, top: 0 };
+    // screenX = 300, panX = 100, zoom = 2 → worldX = (300 - 100) / 2 = 100
+    expect(screenToWorld(300, 200, rect, 100, 50, 2)).toEqual({ x: 100, y: 75 });
+  });
+
+  it('worldToScreen is the inverse of screenToWorld', () => {
+    const rect = { left: 100, top: 50 };
+    const panX = 75;
+    const panY = -25;
+    const zoom = 1.5;
+    const world = { x: 200, y: 300 };
+
+    const screen = worldToScreen(world.x, world.y, panX, panY, zoom);
+    // screen is in canvas-local coords; add rect offset to get clientXY then invert
+    const recovered = screenToWorld(screen.x + rect.left, screen.y + rect.top, rect, panX, panY, zoom);
+    expect(recovered.x).toBeCloseTo(world.x);
+    expect(recovered.y).toBeCloseTo(world.y);
+  });
+
+  it('worldToScreen at origin with no pan/zoom returns world coords as-is', () => {
+    expect(worldToScreen(50, 75, 0, 0, 1)).toEqual({ x: 50, y: 75 });
   });
 });

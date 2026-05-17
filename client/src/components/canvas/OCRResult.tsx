@@ -13,12 +13,23 @@ interface Bounds {
 
 interface Props {
   result: { text: string; confidence: number };
-  selectionBounds: Bounds;
+  selectionBounds: Bounds; // world coords
+  panX: number;
+  panY: number;
+  zoom: number;
   onClose: () => void;
   onStickyAdded?: (note: StickyNote) => void;
 }
 
-export default function OCRResult({ result, selectionBounds, onClose, onStickyAdded }: Props) {
+export default function OCRResult({
+  result,
+  selectionBounds,
+  panX,
+  panY,
+  zoom,
+  onClose,
+  onStickyAdded,
+}: Props) {
   const addStickyNote = useWhiteboardStore((s) => s.addStickyNote);
   const user = useWhiteboardStore((s) => s.user);
 
@@ -55,8 +66,9 @@ export default function OCRResult({ result, selectionBounds, onClose, onStickyAd
     <div
       className="absolute bg-white rounded-xl shadow-xl p-4 pointer-events-auto"
       style={{
-        left: selectionBounds.x,
-        top: selectionBounds.y + selectionBounds.height + 12,
+        // Position in screen space, projected from world coords
+        left: selectionBounds.x * zoom + panX,
+        top: (selectionBounds.y + selectionBounds.height) * zoom + panY + 12,
         width: 280,
         zIndex: 50,
       }}

@@ -15,8 +15,11 @@ export interface Bounds {
 }
 
 interface Props {
-  selection: Bounds | null;
+  selection: Bounds | null; // in world coordinates
   boardId: string;
+  panX: number;
+  panY: number;
+  zoom: number;
   onClear: () => void;
   onStrokeDeleted?: (id: string) => void;
 }
@@ -24,6 +27,9 @@ interface Props {
 export default function SelectionOverlay({
   selection,
   boardId,
+  panX,
+  panY,
+  zoom,
   onClear,
   onStrokeDeleted,
 }: Props) {
@@ -34,6 +40,15 @@ export default function SelectionOverlay({
 
   if (!selection) return null;
 
+  // World → screen projection so the HTML overlay sits over the right spot
+  const screen = {
+    x: selection.x * zoom + panX,
+    y: selection.y * zoom + panY,
+    width: selection.width * zoom,
+    height: selection.height * zoom,
+  };
+
+  // "Too small" check uses world dimensions (OCR quality threshold)
   const tooSmall = selection.width < 50 || selection.height < 50;
 
   async function extractText() {
@@ -41,6 +56,7 @@ export default function SelectionOverlay({
     setProcessing(true);
 
     try {
+      // Render the selected world region at native resolution (independent of zoom)
       const dpr = window.devicePixelRatio || 1;
       const off = document.createElement('canvas');
       off.width = selection.width * dpr;
@@ -51,12 +67,10 @@ export default function SelectionOverlay({
       ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(0, 0, selection.width, selection.height);
 
-      // Draw only strokes intersecting the selection bounds
       ctx.save();
       ctx.translate(-selection.x, -selection.y);
       for (const s of strokes) {
         if (rectsIntersect(strokeBounds(s), selection)) {
-          // Force black for OCR contrast
           drawStroke(ctx, { ...s, color: '#000000' });
         }
       }
@@ -119,23 +133,15 @@ export default function SelectionOverlay({
 
   return (
     <>
+      {/* Selection rectangle (in screen space, projected from world coords) */}
       <div
         className="absolute pointer-events-none"
-        style={{
-          left: selection.x,
-          top: selection.y,
-          width: selection.width,
-          height: selection.height,
-        }}
+        style={{ left: screen.x, top: screen.y, width: screen.width, height: screen.height }}
       >
         <div
           className="absolute inset-0"
-          style={{
-            border: '2px dashed #6366F1',
-            background: 'rgba(99, 102, 241, 0.08)',
-          }}
+          style={{ border: '2px dashed #6366F1', background: 'rgba(99, 102, 241, 0.08)' }}
         />
-        {/* Corner handles */}
         {[
           { left: 0, top: 0 },
           { right: 0, top: 0 },
@@ -157,12 +163,12 @@ export default function SelectionOverlay({
         )}
       </div>
 
-      {/* Floating toolbar above selection */}
+      {/* Floating toolbar — also screen-space, anchored to the top-center of the selection */}
       <div
         className="absolute pointer-events-auto"
         style={{
-          left: selection.x + selection.width / 2,
-          top: selection.y - 12,
+          left: screen.x + screen.width / 2,
+          top: screen.y - 12,
           transform: 'translate(-50%, -100%)',
         }}
       >
@@ -198,6 +204,9 @@ export default function SelectionOverlay({
         <OCRResult
           result={ocrResult}
           selectionBounds={selection}
+          panX={panX}
+          panY={panY}
+          zoom={zoom}
           onClose={() => {
             setOcrResult(null);
             onClear();

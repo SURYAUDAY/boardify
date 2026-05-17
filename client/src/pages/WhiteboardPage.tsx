@@ -284,22 +284,24 @@ export default function WhiteboardPage() {
 
       {/* Canvas area */}
       <div className="flex-grow relative overflow-hidden">
+        {/* Canvas owns its own world transform (pan + zoom applied inside ctx) */}
+        <Canvas
+          onPointerMove={onPointerMove}
+          onStrokeAdded={onStrokeAdded}
+          onStrokeDeleted={onStrokeDeleted}
+          onStickyCreated={onStickyCreated}
+          onSelectionChanged={setSelection}
+          readOnly={readOnly}
+        />
+
+        {/* HTML overlays that live in world space: apply CSS transform to match */}
         <div
-          className="absolute inset-0"
+          className="absolute inset-0 pointer-events-none"
           style={{
             transformOrigin: '0 0',
             transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
           }}
         >
-          <Canvas
-            onPointerMove={onPointerMove}
-            onStrokeAdded={onStrokeAdded}
-            onStrokeDeleted={onStrokeDeleted}
-            onStickyCreated={onStickyCreated}
-            onSelectionChanged={setSelection}
-            readOnly={readOnly}
-          />
-
           <StickyNotesLayer
             onUpdate={(noteId, partial) => emitStickyUpdate(noteId, partial)}
             onDelete={(noteId) => emitStickyDelete(noteId)}
@@ -312,6 +314,9 @@ export default function WhiteboardPage() {
           <SelectionOverlay
             selection={selection}
             boardId={id}
+            panX={panX}
+            panY={panY}
+            zoom={zoom}
             onClear={() => setSelection(null)}
             onStrokeDeleted={onStrokeDeleted}
           />
