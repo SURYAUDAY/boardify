@@ -5,6 +5,7 @@ import api from '../../lib/api';
 import { useWhiteboardStore } from '../../store/whiteboardStore';
 import AISummariseTab from './AISummariseTab';
 import AIOrganiseTab from './AIOrganiseTab';
+import QuotaBanner from './QuotaBanner';
 import type { Stroke, StickyNote } from '@shared/types';
 
 interface Props {
@@ -56,6 +57,7 @@ export default function AIPanel({
   const [result, setResult] = useState<{ shapeCount: number; generationId: string } | null>(
     null
   );
+  const [quotaTick, setQuotaTick] = useState(0); // bump to refresh QuotaBanner
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const addStroke = useWhiteboardStore((s) => s.addStroke);
@@ -145,12 +147,21 @@ export default function AIPanel({
 
       setResult({ shapeCount: count, generationId });
       setStatus('success');
+      setQuotaTick((n) => n + 1);
     } catch (err: unknown) {
-      const message =
-        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ||
-        'Could not reach the AI service.';
+      const errObj = err as { response?: { status?: number; data?: { error?: string; nextAvailableAt?: string } } };
+      const status = errObj?.response?.status;
+      let message = errObj?.response?.data?.error || 'Could not reach the AI service.';
+      if (status === 429 && errObj.response?.data?.nextAvailableAt) {
+        const ms = new Date(errObj.response.data.nextAvailableAt).getTime() - Date.now();
+        const h = Math.floor(ms / 3_600_000);
+        const m = Math.floor((ms % 3_600_000) / 60_000);
+        const human = h > 0 ? `${h}h ${m}m` : `${m}m`;
+        message = `${errObj.response.data.error} Try again in ${human}.`;
+      }
       setError(message);
       setStatus('error');
+      setQuotaTick((n) => n + 1);
     }
   }
 
@@ -211,11 +222,20 @@ export default function AIPanel({
       </div>
 
       <div className="p-4 overflow-y-auto flex-grow">
+        <QuotaBanner refreshKey={quotaTick} />
+
         {activeTab === 'summarise' && (
-          <AISummariseTab boardId={boardId} onStickyAdded={onStickyAdded} />
+          <AISummariseTab
+            boardId={boardId}
+            onStickyAdded={onStickyAdded}
+            onQuotaConsumed={() => setQuotaTick((n) => n + 1)}
+          />
         )}
         {activeTab === 'organise' && (
-          <AIOrganiseTab onStickyUpdated={onStickyUpdated} />
+          <AIOrganiseTab
+            onStickyUpdated={onStickyUpdated}
+            onQuotaConsumed={() => setQuotaTick((n) => n + 1)}
+          />
         )}
 
         {activeTab === 'diagram' && status === 'idle' && (

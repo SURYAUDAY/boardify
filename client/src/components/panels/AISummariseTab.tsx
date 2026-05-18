@@ -9,11 +9,12 @@ import type { StickyNote } from '@shared/types';
 interface Props {
   boardId: string;
   onStickyAdded?: (note: StickyNote) => void;
+  onQuotaConsumed?: () => void;
 }
 
 type Status = 'idle' | 'loading' | 'success' | 'empty';
 
-export default function AISummariseTab({ boardId, onStickyAdded }: Props) {
+export default function AISummariseTab({ boardId, onStickyAdded, onQuotaConsumed }: Props) {
   const [status, setStatus] = useState<Status>('idle');
   const [summary, setSummary] = useState<string | null>(null);
   const stickyNotes = useWhiteboardStore((s) => s.stickyNotes);
@@ -35,8 +36,15 @@ export default function AISummariseTab({ boardId, onStickyAdded }: Props) {
       }
       setSummary(res.data.summary);
       setStatus('success');
-    } catch {
-      toast.error('Could not generate summary');
+      onQuotaConsumed?.();
+    } catch (err: unknown) {
+      const errObj = err as { response?: { status?: number; data?: { error?: string } } };
+      if (errObj?.response?.status === 429) {
+        toast.error(errObj.response?.data?.error || 'AI quota reached for today');
+        onQuotaConsumed?.();
+      } else {
+        toast.error('Could not generate summary');
+      }
       setStatus('idle');
     }
   }

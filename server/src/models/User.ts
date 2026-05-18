@@ -7,6 +7,8 @@ export interface IUser extends Document {
   password: string;
   avatar: string;
   createdAt: Date;
+  // Rolling 24h AI quota: timestamps of recent successful AI calls
+  aiCallHistory: Date[];
   comparePassword(candidate: string): Promise<boolean>;
 }
 
@@ -16,6 +18,7 @@ const UserSchema = new Schema<IUser>({
   password: { type: String, required: true },
   avatar: { type: String, default: '#6366F1' },
   createdAt: { type: Date, default: Date.now },
+  aiCallHistory: { type: [Date], default: [] },
 });
 
 UserSchema.pre<IUser>('save', async function () {

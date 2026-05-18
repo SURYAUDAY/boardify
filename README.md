@@ -37,6 +37,8 @@ Or click the **"Try the live demo →"** link on the landing page — credential
 
 > Heads up: the backend is hosted on Render's free tier and sleeps after 15 minutes of inactivity. The very first request after a long idle takes ~30 seconds to wake the server. Subsequent requests are instant.
 
+> **AI usage limits.** To protect against bot abuse on the live demo, AI features (Diagram / Summarise / Organise / OCR) are capped at **2 calls per user per 24 hours**, plus a per-IP daily cap of 10 calls. The AI panel shows your remaining budget. Failed calls don't count against the quota.
+
 ## Key features
 
 ### Drawing canvas (HTML5 Canvas)

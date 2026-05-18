@@ -23,6 +23,11 @@ const openai = require('../../lib/openai').default as {
 
 import { app } from '../../index';
 import Board from '../../models/Board';
+import { _resetIpQuotaForTests } from '../../middleware/aiQuota';
+
+beforeEach(() => {
+  _resetIpQuotaForTests();
+});
 
 async function createUserAndToken(email = 'ai-user@example.com') {
   const res = await request(app)
@@ -298,5 +303,152 @@ describe('POST /api/ai/ocr', () => {
       .send({ imageBase64: 'not-an-image', boardId });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('AI quota enforcement', () => {
+  beforeEach(() => {
+    openai.chat.completions.create.mockReset();
+  });
+
+  it('blocks a 3rd AI call within 24h (per-user limit is 2)', async () => {
+    const { token, userId } = await createUserAndToken('quota@example.com');
+    const boardId = await createBoard(userId);
+
+    openai.chat.completions.create.mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({ shapes: [{ id: 's1', type: 'rect', x: 0, y: 0, width: 100, height: 50, label: 'X' }], connections: [] }),
+          },
+        },
+      ],
+    });
+
+    // First two calls succeed
+    for (let i = 0; i < 2; i++) {
+      const res = await request(app)
+        .post('/api/ai/diagram')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ prompt: `call ${i}`, boardId });
+      expect(res.status).toBe(200);
+    }
+
+    // Third call is blocked
+    const blocked = await request(app)
+      .post('/api/ai/diagram')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ prompt: 'one too many', boardId });
+
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.scope).toBe('user');
+    expect(blocked.body.nextAvailableAt).toBeDefined();
+  });
+
+  it('quota counts across different AI features (diagram + ocr both burn the same budget)', async () => {
+    const { token, userId } = await createUserAndToken('mixed-quota@example.com');
+    const boardId = await createBoard(userId);
+
+    openai.chat.completions.create.mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({ shapes: [{ id: 's1', type: 'rect', x: 0, y: 0, width: 100, height: 50, label: 'X' }], connections: [] }),
+          },
+        },
+      ],
+    });
+
+    // 2 diagrams uses the full budget
+    for (let i = 0; i < 2; i++) {
+      await request(app)
+        .post('/api/ai/diagram')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ prompt: `call ${i}`, boardId });
+    }
+
+    // OCR is blocked by the same quota
+    openai.chat.completions.create.mockResolvedValue({
+      choices: [{ message: { content: 'hello' } }],
+    });
+    const blocked = await request(app)
+      .post('/api/ai/ocr')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ imageBase64: 'data:image/png;base64,iVBORw0KGgo=', boardId });
+
+    expect(blocked.status).toBe(429);
+  });
+
+  it('failed AI calls do NOT count against the quota', async () => {
+    const { token, userId } = await createUserAndToken('fail-quota@example.com');
+    const boardId = await createBoard(userId);
+
+    // First call: OpenAI throws → no quota consumed
+    openai.chat.completions.create.mockRejectedValue(new Error('Service down'));
+    const failed = await request(app)
+      .post('/api/ai/diagram')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ prompt: 'flaky', boardId });
+    expect(failed.status).toBe(502);
+
+    // Now succeed twice — still allowed
+    openai.chat.completions.create.mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({ shapes: [{ id: 's1', type: 'rect', x: 0, y: 0, width: 100, height: 50, label: 'X' }], connections: [] }),
+          },
+        },
+      ],
+    });
+    for (let i = 0; i < 2; i++) {
+      const res = await request(app)
+        .post('/api/ai/diagram')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ prompt: `ok ${i}`, boardId });
+      expect(res.status).toBe(200);
+    }
+  });
+});
+
+describe('GET /api/ai/quota', () => {
+  it('returns current quota state for the authenticated user', async () => {
+    const { token } = await createUserAndToken('quota-info@example.com');
+    const res = await request(app)
+      .get('/api/ai/quota')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.limit).toBeGreaterThan(0);
+    expect(res.body.windowHours).toBe(24);
+    expect(res.body.used).toBe(0);
+    expect(res.body.remaining).toBe(res.body.limit);
+    expect(res.body.nextAvailableAt).toBeNull();
+  });
+
+  it('reports used/remaining after a successful AI call', async () => {
+    const { token, userId } = await createUserAndToken('quota-tick@example.com');
+    const boardId = await createBoard(userId);
+
+    openai.chat.completions.create.mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({ shapes: [{ id: 's1', type: 'rect', x: 0, y: 0, width: 100, height: 50, label: 'X' }], connections: [] }),
+          },
+        },
+      ],
+    });
+    await request(app)
+      .post('/api/ai/diagram')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ prompt: 'first', boardId });
+
+    const res = await request(app)
+      .get('/api/ai/quota')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.body.used).toBe(1);
+    expect(res.body.remaining).toBe(res.body.limit - 1);
   });
 });

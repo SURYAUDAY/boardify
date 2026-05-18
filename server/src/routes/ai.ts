@@ -4,10 +4,39 @@ import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import openai from '../lib/openai';
 import Board from '../models/Board';
+import User from '../models/User';
 import { requireAuth } from '../middleware/auth';
+import {
+  checkAiQuota,
+  recordAiUsage,
+  AI_CALLS_PER_USER_PER_WINDOW,
+  AI_QUOTA_WINDOW_MS,
+} from '../middleware/aiQuota';
 
 const router = Router();
 router.use(requireAuth);
+
+// Lightweight quota status — does NOT count against the quota itself
+router.get('/quota', async (req: Request, res: Response) => {
+  const user = await User.findById(req.user!.id);
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+  const cutoff = Date.now() - AI_QUOTA_WINDOW_MS;
+  const hits = (user.aiCallHistory || [])
+    .map((d) => new Date(d).getTime())
+    .filter((t) => t >= cutoff);
+  const remaining = Math.max(0, AI_CALLS_PER_USER_PER_WINDOW - hits.length);
+  const nextAvailableAt =
+    hits.length >= AI_CALLS_PER_USER_PER_WINDOW
+      ? new Date(hits[0] + AI_QUOTA_WINDOW_MS)
+      : null;
+  return res.json({
+    limit: AI_CALLS_PER_USER_PER_WINDOW,
+    windowHours: AI_QUOTA_WINDOW_MS / 3_600_000,
+    used: hits.length,
+    remaining,
+    nextAvailableAt,
+  });
+});
 
 const diagramSchema = z.object({
   prompt: z.string().min(3, 'Prompt too short').max(500, 'Prompt too long'),
@@ -31,7 +60,7 @@ Layout rules:
 - Success states: green #10B981 border; error states: red #EF4444 border; decisions: yellow #F59E0B border
 Return ONLY the JSON object. No preamble, no markdown fences.`;
 
-router.post('/diagram', async (req: Request, res: Response) => {
+router.post('/diagram', checkAiQuota, async (req: Request, res: Response) => {
   const parsed = diagramSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0].message });
@@ -57,6 +86,7 @@ router.post('/diagram', async (req: Request, res: Response) => {
     if (!Array.isArray(parsedJson.shapes)) {
       return res.status(502).json({ error: 'AI returned invalid format' });
     }
+    await recordAiUsage(req, res);
     return res.json({
       shapes: parsedJson.shapes,
       connections: Array.isArray(parsedJson.connections) ? parsedJson.connections : [],
@@ -78,7 +108,7 @@ const summariseSchema = z.object({
   }),
 });
 
-router.post('/summarise', async (req: Request, res: Response) => {
+router.post('/summarise', checkAiQuota, async (req: Request, res: Response) => {
   const parsed = summariseSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0].message });
@@ -97,6 +127,7 @@ router.post('/summarise', async (req: Request, res: Response) => {
   const items = [...stickyTexts, ...strokeTexts];
 
   if (items.length < 3) {
+    // Doesn't hit OpenAI → doesn't count against quota
     return res.json({ summary: null, reason: 'Not enough content' });
   }
 
@@ -113,6 +144,7 @@ router.post('/summarise', async (req: Request, res: Response) => {
       ],
     });
     const summary = completion.choices?.[0]?.message?.content?.trim() || '';
+    await recordAiUsage(req, res);
     return res.json({ summary });
   } catch {
     return res.status(502).json({ error: 'AI service unavailable. Please try again.' });
@@ -131,7 +163,7 @@ const organiseSchema = z.object({
     .min(2, 'At least 2 notes required'),
 });
 
-router.post('/organise', async (req: Request, res: Response) => {
+router.post('/organise', checkAiQuota, async (req: Request, res: Response) => {
   const parsed = organiseSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0].message });
@@ -161,6 +193,7 @@ router.post('/organise', async (req: Request, res: Response) => {
     if (!Array.isArray(parsedJson.themes)) {
       return res.status(502).json({ error: 'AI returned invalid format' });
     }
+    await recordAiUsage(req, res);
     return res.json({ themes: parsedJson.themes });
   } catch {
     return res.status(502).json({ error: 'AI service unavailable. Please try again.' });
@@ -177,7 +210,7 @@ const ocrSchema = z.object({
   }),
 });
 
-router.post('/ocr', async (req: Request, res: Response) => {
+router.post('/ocr', checkAiQuota, async (req: Request, res: Response) => {
   const parsed = ocrSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0].message });
@@ -201,6 +234,7 @@ router.post('/ocr', async (req: Request, res: Response) => {
       ],
     });
     const text = (completion.choices?.[0]?.message?.content || '').trim();
+    await recordAiUsage(req, res);
     return res.json({ text, confidence: 0.9 });
   } catch {
     return res.status(502).json({ error: 'AI service unavailable. Please try again.' });

@@ -79,8 +79,13 @@ export default function SelectionOverlay({
       const dataUrl = off.toDataURL('image/png');
       const res = await api.post('/ai/ocr', { imageBase64: dataUrl, boardId });
       setOcrResult(res.data);
-    } catch {
-      toast.error('Could not extract text');
+    } catch (err: unknown) {
+      const errObj = err as { response?: { status?: number; data?: { error?: string } } };
+      if (errObj?.response?.status === 429) {
+        toast.error(errObj.response?.data?.error || 'AI quota reached for today');
+      } else {
+        toast.error('Could not extract text');
+      }
     } finally {
       setProcessing(false);
     }

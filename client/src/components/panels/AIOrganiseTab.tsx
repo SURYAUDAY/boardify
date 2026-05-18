@@ -7,6 +7,7 @@ import type { StickyNote } from '@shared/types';
 
 interface Props {
   onStickyUpdated?: (id: string, partial: Partial<StickyNote>) => void;
+  onQuotaConsumed?: () => void;
 }
 
 interface Theme {
@@ -17,7 +18,7 @@ interface Theme {
 
 type Status = 'idle' | 'loading' | 'success';
 
-export default function AIOrganiseTab({ onStickyUpdated }: Props) {
+export default function AIOrganiseTab({ onStickyUpdated, onQuotaConsumed }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<Status>('idle');
   const [themes, setThemes] = useState<Theme[]>([]);
@@ -52,8 +53,15 @@ export default function AIOrganiseTab({ onStickyUpdated }: Props) {
       const res = await api.post('/ai/organise', { notes });
       setThemes(res.data.themes);
       setStatus('success');
-    } catch {
-      toast.error('Could not organise notes');
+      onQuotaConsumed?.();
+    } catch (err: unknown) {
+      const errObj = err as { response?: { status?: number; data?: { error?: string } } };
+      if (errObj?.response?.status === 429) {
+        toast.error(errObj.response?.data?.error || 'AI quota reached for today');
+        onQuotaConsumed?.();
+      } else {
+        toast.error('Could not organise notes');
+      }
       setStatus('idle');
     }
   }
