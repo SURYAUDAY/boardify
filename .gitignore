@@ -7,3 +7,4 @@ coverage
 .claude/
 .vscode/
 *.tsbuildinfo
+resume.md
